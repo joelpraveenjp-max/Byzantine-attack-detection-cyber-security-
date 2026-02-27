@@ -1,0 +1,723 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import os
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import warnings
+warnings.filterwarnings('ignore')
+
+# TensorFlow imports for RNN
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, SimpleRNN, Bidirectional
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras import regularizers
+
+st.set_page_config(page_title="Cyber Attack RNN Dashboard", layout="wide")
+
+# ---------------------------
+# Custom CSS for better styling
+# ---------------------------
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #1f77b4;
+        margin: 0.5rem 0;
+    }
+    .attack-alert {
+        background-color: #ffcccc;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #ff0000;
+        margin: 0.5rem 0;
+    }
+    .defense-card {
+        background-color: #ccffcc;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #00cc00;
+        margin: 0.5rem 0;
+    }
+    .training-progress {
+        background-color: #e6f3ff;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+    }
+    .success-card {
+        background-color: #d4edda;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #28a745;
+        margin: 0.5rem 0;
+    }
+    .auto-load {
+        background-color: #e6f3ff;
+        padding: 0.5rem;
+        border-radius: 5px;
+        border-left: 4px solid #1f77b4;
+        margin: 0.5rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------
+# Generate High-Quality Synthetic Cyber Security Data
+# ---------------------------
+def generate_cyber_security_data(num_samples=1000):
+    """Generate synthetic cyber security dataset for demonstration"""
+    np.random.seed(42)
+    
+    data = {}
+    
+    # Base features
+    data['Packet_Size'] = np.random.randint(64, 1500, num_samples)
+    data['Packet_Count'] = np.random.randint(1, 1000, num_samples)
+    data['Duration'] = np.random.exponential(500, num_samples)
+    data['Source_Port'] = np.random.randint(1024, 65535, num_samples)
+    data['Destination_Port'] = np.random.choice([80, 443, 22, 53, 3389, 1433, 3306, 8080], num_samples)
+    data['Protocol'] = np.random.choice([0, 1, 2, 3, 4], num_samples)
+    data['TCP_Flags'] = np.random.randint(0, 255, num_samples)
+    data['Window_Size'] = np.random.randint(1024, 65535, num_samples)
+    data['TTL'] = np.random.randint(32, 255, num_samples)
+    data['Flow_Duration'] = np.random.exponential(1000, num_samples)
+    data['Total_Fwd_Packets'] = np.random.randint(1, 500, num_samples)
+    data['Total_Backward_Packets'] = np.random.randint(1, 500, num_samples)
+    data['Fwd_Packet_Length_Max'] = np.random.randint(100, 1500, num_samples)
+    data['Bwd_Packet_Length_Max'] = np.random.randint(100, 1500, num_samples)
+    data['Flow_Bytes_s'] = np.random.exponential(1000, num_samples)
+    data['Flow_Packets_s'] = np.random.exponential(100, num_samples)
+    data['Packet_Length_Mean'] = np.random.randint(200, 1200, num_samples)
+    data['Packet_Length_Std'] = np.random.exponential(100, num_samples)
+    
+    df = pd.DataFrame(data)
+    
+    # Initialize all as Normal
+    attack_types = np.full(num_samples, 'Normal')
+    
+    # Create attack patterns
+    # DDoS
+    ddos_mask = (df['Packet_Count'] > 600) & (df['Duration'] < 100)
+    num_ddos = min(ddos_mask.sum(), int(num_samples * 0.2))
+    ddos_indices = np.random.choice(np.where(ddos_mask)[0], num_ddos, replace=False)
+    df.loc[ddos_indices, 'Packet_Count'] = np.random.randint(800, 2500, num_ddos)
+    df.loc[ddos_indices, 'Flow_Bytes_s'] = np.random.exponential(15000, num_ddos)
+    attack_types[ddos_indices] = 'DDoS'
+    
+    # Port Scan
+    port_scan_mask = (df['Destination_Port'].isin([21, 22, 23, 25, 53, 110, 135, 139, 143, 443, 993, 995])) & (df['Packet_Count'] < 100)
+    num_port_scan = min(port_scan_mask.sum(), int(num_samples * 0.15))
+    port_scan_indices = np.random.choice(np.where(port_scan_mask)[0], num_port_scan, replace=False)
+    df.loc[port_scan_indices, 'Total_Fwd_Packets'] = np.random.randint(10, 50, num_port_scan)
+    df.loc[port_scan_indices, 'TCP_Flags'] = np.random.randint(2, 4, num_port_scan)
+    attack_types[port_scan_indices] = 'Port_Scan'
+    
+    # Malware
+    malware_mask = (df['Packet_Size'] > 1200) & (df['Destination_Port'].isin([4444, 5555, 6666, 7777, 8888, 9999]))
+    num_malware = min(malware_mask.sum(), int(num_samples * 0.15))
+    malware_indices = np.random.choice(np.where(malware_mask)[0], num_malware, replace=False)
+    df.loc[malware_indices, 'Packet_Size'] = np.random.randint(1300, 1500, num_malware)
+    attack_types[malware_indices] = 'Malware'
+    
+    # Brute Force
+    brute_force_mask = (df['Total_Fwd_Packets'] > 150) & (df['Source_Port'] > 49000) & (df['Destination_Port'].isin([22, 23, 3389, 1433, 3306, 5432]))
+    num_brute_force = min(brute_force_mask.sum(), int(num_samples * 0.15))
+    brute_force_indices = np.random.choice(np.where(brute_force_mask)[0], num_brute_force, replace=False)
+    df.loc[brute_force_indices, 'Total_Fwd_Packets'] = np.random.randint(200, 800, num_brute_force)
+    attack_types[brute_force_indices] = 'Brute_Force'
+    
+    # SQL Injection
+    sql_injection_mask = (df['Destination_Port'].isin([80, 443, 8080])) & (df['Packet_Size'].between(600, 1000)) & (df['Total_Fwd_Packets'] > 80)
+    num_sql_injection = min(sql_injection_mask.sum(), int(num_samples * 0.15))
+    sql_injection_indices = np.random.choice(np.where(sql_injection_mask)[0], num_sql_injection, replace=False)
+    df.loc[sql_injection_indices, 'Packet_Size'] = np.random.randint(700, 950, num_sql_injection)
+    attack_types[sql_injection_indices] = 'SQL_Injection'
+    
+    df['Attack_Type'] = attack_types
+    
+    return df
+
+# ---------------------------
+# Create Enhanced RNN Model
+# ---------------------------
+def create_enhanced_rnn_model(input_shape, num_classes):
+    """Create enhanced RNN model"""
+    model = Sequential([
+        Bidirectional(LSTM(128, return_sequences=True, 
+                          kernel_regularizer=regularizers.l2(0.001)),
+                     input_shape=input_shape),
+        Dropout(0.3),
+        Bidirectional(LSTM(64, return_sequences=True,
+                          kernel_regularizer=regularizers.l2(0.001))),
+        Dropout(0.3),
+        LSTM(32, return_sequences=False,
+             kernel_regularizer=regularizers.l2(0.001)),
+        Dropout(0.2),
+        Dense(64, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        Dropout(0.2),
+        Dense(32, activation='relu', kernel_regularizer=regularizers.l2(0.001)),
+        Dropout(0.1),
+        Dense(num_classes, activation='softmax')
+    ])
+    
+    optimizer = Adam(learning_rate=0.001, weight_decay=0.0001)
+    
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=['accuracy', 'precision', 'recall']
+    )
+    
+    return model
+
+def create_sequences_with_labels(data, labels, sequence_length):
+    """Create sequences with corresponding labels"""
+    sequences = []
+    sequence_labels = []
+    
+    for i in range(len(data) - sequence_length + 1):
+        sequences.append(data[i:(i + sequence_length)])
+        sequence_labels.append(labels[i + sequence_length - 1])
+    
+    return np.array(sequences), np.array(sequence_labels)
+
+def train_rnn_model():
+    """Train the RNN model"""
+    st.info("🔄 Training RNN model with synthetic data...")
+    
+    # Generate data
+    df = generate_cyber_security_data(10000)
+    
+    # Preprocess data
+    df_processed = df.copy()
+    
+    # Encode labels
+    le = LabelEncoder()
+    y = le.fit_transform(df_processed['Attack_Type'])
+    X = df_processed.drop('Attack_Type', axis=1)
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Create sequences
+    sequence_length = 10
+    X_sequences, y_sequences = create_sequences_with_labels(X_scaled, y, sequence_length)
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_sequences, y_sequences, test_size=0.2, random_state=42, stratify=y_sequences
+    )
+    
+    # Convert to categorical
+    y_train_categorical = to_categorical(y_train, num_classes=len(le.classes_))
+    y_test_categorical = to_categorical(y_test, num_classes=len(le.classes_))
+    
+    # Create and train model
+    model = create_enhanced_rnn_model((sequence_length, X_train.shape[2]), len(le.classes_))
+    
+    # Callbacks
+    early_stopping = EarlyStopping(monitor='val_accuracy', patience=10, restore_best_weights=True)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.0001)
+    
+    # Train model
+    history = model.fit(
+        X_train, y_train_categorical,
+        epochs=50,
+        batch_size=64,
+        validation_data=(X_test, y_test_categorical),
+        callbacks=[early_stopping, reduce_lr],
+        verbose=0
+    )
+    
+    # Evaluate
+    train_accuracy = history.history['accuracy'][-1]
+    val_accuracy = history.history['val_accuracy'][-1]
+    
+    # Save model and artifacts
+    output_dir = "enhanced_rnn_model"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    model.save(f"{output_dir}/rnn_model.h5")
+    joblib.dump(scaler, f"{output_dir}/scaler.pkl")
+    joblib.dump(le, f"{output_dir}/label_encoder.pkl")
+    joblib.dump(X.columns.tolist(), f"{output_dir}/feature_columns.pkl")
+    joblib.dump(sequence_length, f"{output_dir}/sequence_length.pkl")
+    joblib.dump(history.history, f"{output_dir}/training_history.pkl")
+    
+    st.success("✅ Model training completed successfully!")
+    
+    return model, scaler, le, X.columns.tolist(), sequence_length, train_accuracy, val_accuracy
+
+# ---------------------------
+# Auto Load Model Function
+# ---------------------------
+@st.cache_resource
+def auto_load_models():
+    """Automatically load models if available, otherwise train new ones"""
+    output_dir = "enhanced_rnn_model"
+    
+    # Check if model exists
+    if os.path.exists(f"{output_dir}/rnn_model.h5"):
+        try:
+            st.markdown('<div class="auto-load">🔄 Auto-loading pre-trained model...</div>', unsafe_allow_html=True)
+            
+            # Load existing models
+            rnn_model = tf.keras.models.load_model(f"{output_dir}/rnn_model.h5")
+            scaler = joblib.load(f"{output_dir}/scaler.pkl")
+            le = joblib.load(f"{output_dir}/label_encoder.pkl")
+            feature_list = joblib.load(f"{output_dir}/feature_columns.pkl")
+            sequence_length = joblib.load(f"{output_dir}/sequence_length.pkl")
+            
+            # Load training history if exists
+            training_history = None
+            if os.path.exists(f"{output_dir}/training_history.pkl"):
+                training_history = joblib.load(f"{output_dir}/training_history.pkl")
+            
+            st.markdown('<div class="auto-load">✅ Pre-trained model loaded successfully!</div>', unsafe_allow_html=True)
+            return rnn_model, scaler, le, feature_list, sequence_length, True, training_history
+            
+        except Exception as e:
+            st.error(f"❌ Error loading model: {e}")
+            st.info("🔄 Training new model...")
+            # Train new model if loading fails
+            rnn_model, scaler, le, feature_list, sequence_length, train_acc, val_acc = train_rnn_model()
+            return rnn_model, scaler, le, feature_list, sequence_length, False, None
+    else:
+        st.info("🔄 No pre-trained model found. Training new model...")
+        # Train new model
+        rnn_model, scaler, le, feature_list, sequence_length, train_acc, val_acc = train_rnn_model()
+        return rnn_model, scaler, le, feature_list, sequence_length, False, None
+
+# ---------------------------
+# Initialize Session State and Auto-Load Models
+# ---------------------------
+if 'models_loaded' not in st.session_state:
+    st.session_state.models_loaded = False
+
+# Auto-load models on startup
+if not st.session_state.models_loaded:
+    with st.spinner("🔍 Checking for pre-trained models..."):
+        result = auto_load_models()
+        if result[0] is not None:
+            rnn_model, scaler, le, feature_list, sequence_length, loaded_existing, training_history = result
+            
+            st.session_state.update({
+                'models_loaded': True,
+                'rnn_model': rnn_model,
+                'scaler': scaler,
+                'le': le,
+                'feature_list': feature_list,
+                'sequence_length': sequence_length,
+                'loaded_existing': loaded_existing,
+                'training_history': training_history
+            })
+
+# ---------------------------
+# Sidebar
+# ---------------------------
+with st.sidebar:
+    st.title("🔒 RNN Cyber Defense")
+    
+    # Manual reload button (optional)
+    if st.button("🔄 Manual Reload Models", use_container_width=True):
+        with st.spinner("Reloading models..."):
+            result = auto_load_models()
+            if result[0] is not None:
+                rnn_model, scaler, le, feature_list, sequence_length, loaded_existing, training_history = result
+                
+                st.session_state.update({
+                    'models_loaded': True,
+                    'rnn_model': rnn_model,
+                    'scaler': scaler,
+                    'le': le,
+                    'feature_list': feature_list,
+                    'sequence_length': sequence_length,
+                    'loaded_existing': loaded_existing,
+                    'training_history': training_history
+                })
+                st.success("✅ Models reloaded successfully!")
+    
+    if st.session_state.models_loaded:
+        st.subheader("🔧 Model Status")
+        if st.session_state.loaded_existing:
+            st.success("✅ Pre-trained Model Loaded")
+        else:
+            st.info("🆕 New Model Trained")
+        
+        st.write(f"**Trained Classes:** {len(st.session_state.le.classes_)}")
+        st.write(f"**Class Names:** {list(st.session_state.le.classes_)}")
+        st.write(f"**Sequence Length:** {st.session_state.sequence_length}")
+        st.write(f"**Features Expected:** {len(st.session_state.feature_list)}")
+        
+        # Model performance metrics
+        st.subheader("📊 Model Performance")
+        if st.session_state.training_history:
+            final_train_acc = st.session_state.training_history['accuracy'][-1]
+            final_val_acc = st.session_state.training_history['val_accuracy'][-1]
+            st.write(f"**Training Accuracy:** {final_train_acc:.3f}")
+            st.write(f"**Validation Accuracy:** {final_val_acc:.3f}")
+
+# ---------------------------
+# Main Dashboard Header
+# ---------------------------
+st.markdown('<h1 class="main-header">🛡️ RNN-Powered Cyber Attack Detection Dashboard</h1>', unsafe_allow_html=True)
+
+if st.session_state.models_loaded:
+    if st.session_state.loaded_existing:
+        st.markdown('<p style="text-align: center; color: #28a745; font-size: 1.1rem;">✅ Pre-trained model automatically loaded and ready for analysis</p>', unsafe_allow_html=True)
+    else:
+        st.markdown('<p style="text-align: center; color: #17a2b8; font-size: 1.1rem;">🆕 New model trained and ready for analysis</p>', unsafe_allow_html=True)
+
+# ---------------------------
+# Upload Test Data
+# ---------------------------
+st.subheader("📁 Data Input")
+
+uploaded_file = st.file_uploader("Upload Network Traffic CSV for RNN Analysis", type=["csv"])
+
+if uploaded_file:
+    try:
+        df_test = pd.read_csv(uploaded_file)
+        
+        # Fix duplicate column names by removing duplicates
+        df_test = df_test.loc[:, ~df_test.columns.duplicated()]
+        
+        st.success(f"✅ Data loaded successfully! Shape: {df_test.shape}")
+        
+        # Display data preview
+        with st.expander("🔍 Data Preview"):
+            st.dataframe(df_test.head(10))
+            
+    except Exception as e:
+        st.error(f"❌ Error reading CSV file: {e}")
+        st.stop()
+else:
+    # Use synthetic data for demonstration
+    st.info("📊 Using synthetic data for demonstration. Upload your own CSV file for real analysis.")
+    
+    # Generate synthetic test data
+    demo_data = generate_cyber_security_data(100)
+    df_test = demo_data.copy()
+    
+    # Remove any potential duplicate columns
+    df_test = df_test.loc[:, ~df_test.columns.duplicated()]
+    
+    with st.expander("🔍 Demo Data Preview"):
+        st.dataframe(df_test.head(10))
+        
+    # Show demo data distribution
+    st.write("**Demo Data Attack Distribution:**")
+    attack_counts = df_test['Attack_Type'].value_counts()
+    fig = px.pie(values=attack_counts.values, names=attack_counts.index, 
+                 title="Demo Data Attack Type Distribution")
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------
+# RNN Feature Engineering and Preprocessing
+# ---------------------------
+def create_sequences(data, sequence_length):
+    """Convert tabular data to sequences for RNN"""
+    sequences = []
+    for i in range(len(data) - sequence_length + 1):
+        sequences.append(data[i:(i + sequence_length)])
+    return np.array(sequences)
+
+def preprocess_for_rnn(df, feature_list, scaler, sequence_length):
+    """Preprocess data for RNN prediction"""
+    df_processed = df.copy()
+    
+    # Handle column name variations
+    column_mapping = {
+        'Packet Size': 'Packet_Size',
+        'Packet Count': 'Packet_Count',
+        'Source Port': 'Source_Port', 
+        'Destination Port': 'Destination_Port',
+        'TCP Flags': 'TCP_Flags',
+        'Window Size': 'Window_Size',
+        'Total Fwd Packets': 'Total_Fwd_Packets',
+        'Total Backward Packets': 'Total_Backward_Packets',
+        'Flow Bytes/s': 'Flow_Bytes_s',
+        'Flow Packets/s': 'Flow_Packets_s'
+    }
+    
+    # Rename columns for consistency
+    for old_name, new_name in column_mapping.items():
+        if old_name in df_processed.columns:
+            df_processed = df_processed.rename(columns={old_name: new_name})
+    
+    # Handle missing values
+    for col in df_processed.columns:
+        if df_processed[col].dtype == 'object' and col != 'Attack_Type':
+            df_processed[col].fillna("Unknown", inplace=True)
+        elif df_processed[col].dtype != 'object':
+            df_processed[col].fillna(df_processed[col].median(), inplace=True)
+    
+    # Remove non-feature columns
+    drop_cols = ['Payload Data', 'User Information', 'Device Information',
+                 'Geo-location Data', 'Proxy Information', 'Firewall Logs',
+                 'IDS/IPS Alerts', 'Log Source', 'Attack_Type']
+    df_processed.drop(columns=[c for c in drop_cols if c in df_processed.columns], inplace=True, errors='ignore')
+    
+    # Ensure all features are present
+    available_features = [col for col in feature_list if col in df_processed.columns]
+    missing_features = [col for col in feature_list if col not in df_processed.columns]
+    
+    # Add missing features with default values
+    for col in missing_features:
+        df_processed[col] = 0
+    
+    # Reorder columns to match training
+    df_processed = df_processed[feature_list]
+    
+    # Scale features
+    numeric_cols = df_processed.select_dtypes(include=np.number).columns.tolist()
+    if numeric_cols:
+        df_processed[numeric_cols] = scaler.transform(df_processed[numeric_cols])
+    
+    # Create sequences
+    if len(df_processed) >= sequence_length:
+        sequences = create_sequences(df_processed.values, sequence_length)
+        return sequences, df_processed
+    else:
+        # Pad sequences if insufficient data
+        padding = np.zeros((sequence_length - len(df_processed), len(feature_list)))
+        padded_data = np.vstack([padding, df_processed.values])
+        sequences = np.array([padded_data])
+        return sequences, df_processed
+
+# ---------------------------
+# RNN Prediction
+# ---------------------------
+if st.session_state.models_loaded and 'df_test' in locals():
+    with st.spinner("🔄 RNN Processing - Analyzing network traffic..."):
+        try:
+            # Preprocess data
+            sequences, X_processed = preprocess_for_rnn(
+                df_test.drop(columns=['Attack_Type'], errors='ignore') if 'Attack_Type' in df_test.columns else df_test,
+                st.session_state.feature_list, 
+                st.session_state.scaler, 
+                st.session_state.sequence_length
+            )
+            
+            # Make predictions
+            y_pred_proba = st.session_state.rnn_model.predict(sequences, verbose=0)
+            y_pred = np.argmax(y_pred_proba, axis=1)
+            
+            # Convert predictions
+            predictions_to_use = min(len(df_test), len(y_pred))
+            df_test_result = df_test.iloc[:predictions_to_use].copy()
+            df_test_result['Predicted_Attack_Type'] = st.session_state.le.inverse_transform(y_pred[:predictions_to_use])
+            
+            # Add probability columns for each class
+            for i, class_name in enumerate(st.session_state.le.classes_):
+                df_test_result[f'Prob_{class_name}'] = y_pred_proba[:predictions_to_use, i]
+            
+            # Update df_test with results
+            df_test = df_test_result
+            
+            st.success(f"✅ RNN Analysis Complete! Processed {predictions_to_use} samples.")
+            
+        except Exception as e:
+            st.error(f"❌ Error during RNN prediction: {e}")
+            st.stop()
+
+# ---------------------------
+# Dashboard Layout
+# ---------------------------
+if st.session_state.models_loaded and 'df_test' in locals():
+
+    # Key Metrics
+    st.subheader("🎯 RNN Security Metrics")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Calculate real metrics from predictions
+    total_samples = len(df_test)
+    attack_samples = (df_test['Predicted_Attack_Type'] != 'Normal').sum()
+    normal_samples = (df_test['Predicted_Attack_Type'] == 'Normal').sum()
+    attack_percentage = (attack_samples / total_samples) * 100 if total_samples > 0 else 0
+    
+    with col1:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Attack Detection Rate", f"{attack_percentage:.1f}%", f"{attack_samples} attacks")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Normal Traffic", f"{normal_samples}", f"{(normal_samples/total_samples)*100:.1f}%")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Total Samples", f"{total_samples}", "Analyzed")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col4:
+        threat_level = "HIGH" if attack_percentage > 40 else "MEDIUM" if attack_percentage > 20 else "LOW"
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Threat Level", threat_level, 
+                 "↑ High" if attack_percentage > 40 else "→ Stable")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Prediction Results
+    st.subheader("🔮 RNN Prediction Results")
+    
+    # Add threat level indicators
+    prob_columns = [f'Prob_{class_name}' for class_name in st.session_state.le.classes_]
+    threat_data = df_test[['Predicted_Attack_Type'] + prob_columns].copy()
+    
+    # Calculate threat level (max probability of attack classes)
+    attack_classes = [cls for cls in st.session_state.le.classes_ if cls != 'Normal']
+    if attack_classes:
+        attack_probs = [f'Prob_{cls}' for cls in attack_classes]
+        threat_data['Threat_Level'] = threat_data[attack_probs].max(axis=1)
+    else:
+        threat_data['Threat_Level'] = 1 - threat_data['Prob_Normal']
+    
+    threat_data['Alert'] = threat_data['Threat_Level'].apply(
+        lambda x: '🔴 HIGH' if x > 0.8 else '🟡 MEDIUM' if x > 0.5 else '🟢 LOW'
+    )
+    
+    # Display results
+    st.dataframe(threat_data.head(20))
+    
+    # Download results
+    csv = threat_data.to_csv(index=False)
+    st.download_button(
+        label="📥 Download Prediction Results",
+        data=csv,
+        file_name="cyber_attack_predictions.csv",
+        mime="text/csv"
+    )
+
+    # Real-time Attack Monitoring
+    st.subheader("🚨 Real-time Attack Monitoring Dashboard")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Attack distribution
+        attack_counts = df_test['Predicted_Attack_Type'].value_counts()
+        fig = px.pie(values=attack_counts.values, names=attack_counts.index, 
+                     title="Attack Type Distribution",
+                     color_discrete_sequence=px.colors.sequential.RdBu)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Threat level distribution
+        alert_counts = threat_data['Alert'].value_counts()
+        fig = px.bar(x=alert_counts.index, y=alert_counts.values,
+                     title="Threat Level Distribution",
+                     color=alert_counts.index,
+                     color_discrete_map={'🔴 HIGH': 'red', '🟡 MEDIUM': 'orange', '🟢 LOW': 'green'})
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Show actual vs predicted if available
+    if 'Attack_Type' in df_test.columns:
+        st.subheader("📊 Model Performance Analysis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Actual distribution
+            actual_counts = df_test['Attack_Type'].value_counts()
+            fig = px.pie(values=actual_counts.values, names=actual_counts.index, 
+                         title="Actual Attack Distribution",
+                         color_discrete_sequence=px.colors.sequential.Viridis)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # Confusion matrix
+            cm = confusion_matrix(df_test['Attack_Type'], df_test['Predicted_Attack_Type'])
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                        xticklabels=st.session_state.le.classes_, 
+                        yticklabels=st.session_state.le.classes_)
+            plt.title('Confusion Matrix')
+            plt.ylabel('True Label')
+            plt.xlabel('Predicted Label')
+            plt.tight_layout()
+            st.pyplot(plt)
+        
+        # Classification report
+        st.subheader("📋 Detailed Classification Report")
+        report = classification_report(df_test['Attack_Type'], df_test['Predicted_Attack_Type'], 
+                                     target_names=st.session_state.le.classes_, output_dict=True)
+        report_df = pd.DataFrame(report).transpose()
+        st.dataframe(report_df.style.format("{:.3f}"))
+
+    # Alert System
+    st.subheader("🚨 Security Alerts & Recommendations")
+    
+    high_threats = threat_data[threat_data['Alert'] == '🔴 HIGH']
+    medium_threats = threat_data[threat_data['Alert'] == '🟡 MEDIUM']
+    
+    if not high_threats.empty:
+        st.warning(f"🔴 **HIGH PRIORITY ALERTS:** {len(high_threats)} high-threat attacks detected!")
+        for _, threat in high_threats.head(3).iterrows():
+            st.markdown(f"""
+            <div class="attack-alert">
+                <h4>🔴 CRITICAL THREAT DETECTED</h4>
+                <p><strong>Attack Type:</strong> {threat['Predicted_Attack_Type']}</p>
+                <p><strong>Confidence:</strong> {threat['Threat_Level']:.1%}</p>
+                <p><strong>Recommended Action:</strong> Immediate isolation and investigation required</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    if not medium_threats.empty:
+        st.info(f"🟡 **MEDIUM PRIORITY ALERTS:** {len(medium_threats)} medium-threat attacks detected")
+        for _, threat in medium_threats.head(2).iterrows():
+            st.markdown(f"""
+            <div class="defense-card">
+                <h4>🟡 MEDIUM THREAT DETECTED</h4>
+                <p><strong>Attack Type:</strong> {threat['Predicted_Attack_Type']}</p>
+                <p><strong>Confidence:</strong> {threat['Threat_Level']:.1%}</p>
+                <p><strong>Recommended Action:</strong> Monitor closely and update firewall rules</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    if high_threats.empty and medium_threats.empty:
+        st.markdown("""
+        <div class="success-card">
+            <h4>🟢 ALL SYSTEMS SECURE</h4>
+            <p>No high or medium priority threats detected. System is operating normally.</p>
+            <p><strong>Recommendation:</strong> Continue routine monitoring and security updates.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+else:
+    st.info("👆 Loading models... Please wait a moment for the system to initialize.")
+
+# ---------------------------
+# Footer
+# ---------------------------
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: gray;'>
+        <p>🛡️ <strong>RNN-Powered Cyber Attack Detection System</strong> | 
+        Auto-Load Pre-trained Models | Real-time Threat Intelligence</p>
+        <p>For security emergencies, contact: security-team@organization.com</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
